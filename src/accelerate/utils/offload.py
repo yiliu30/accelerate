@@ -81,6 +81,15 @@ def save_offload_index(index, offload_folder):
     with open(offload_index_file, "w", encoding="utf-8") as f:
         json.dump(current_index, f, indent=2)
 
+from accelerate.utils.timeit import TimeRecorder, Timer
+
+offload_state_dict_time_recorder = TimeRecorder("Offload state dict time")
+
+
+from concurrent.futures import ThreadPoolExecutor
+
+def offload_weight_async(*args):
+    offload_weight(*args)
 
 def offload_state_dict(save_dir: Union[str, os.PathLike], state_dict: Dict[str, torch.Tensor]):
     """
@@ -92,13 +101,19 @@ def offload_state_dict(save_dir: Union[str, os.PathLike], state_dict: Dict[str, 
         state_dict (`Dict[str, torch.Tensor]`):
             The dictionary of tensors to offload.
     """
-    os.makedirs(save_dir, exist_ok=True)
-    index = {}
-    for name, parameter in state_dict.items():
-        index = offload_weight(parameter, name, save_dir, index=index)
+    with Timer("Offload state dict", offload_state_dict_time_recorder):
+        os.makedirs(save_dir, exist_ok=True)
+        index = {}
+        # for name, parameter in state_dict.items():
+        #     index = offload_weight(parameter, name, save_dir, index=index)
 
-    # Update index
-    save_offload_index(index, save_dir)
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(offload_weight_async, parameter, name, save_dir, index) for name, parameter in state_dict.items()]
+            for future in futures:
+                future.result()  # wait for all futures to complete
+
+        # Update index
+        save_offload_index(index, save_dir)
 
 
 class PrefixedDataset(Mapping):
